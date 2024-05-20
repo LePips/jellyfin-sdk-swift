@@ -9,6 +9,40 @@
 import Foundation
 import Get
 
+class TestDelegate: APIClientDelegate {
+    
+    weak var jellyfinClient: JellyfinClient?
+    var passthroughDelegate: APIClientDelegate?
+    
+    public func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
+        
+        // Inject required headers
+        if let headers = jellyfinClient?.authHeaders() {
+            request.addValue(headers, forHTTPHeaderField: "Authorization")
+        }
+
+        try await passthroughDelegate?.client(client, willSendRequest: &request)
+    }
+
+    public func client(_ client: APIClient, validateResponse response: HTTPURLResponse, data: Data, task: URLSessionTask) throws {
+        if let passthroughDelegate {
+            try passthroughDelegate.client(client, validateResponse: response, data: data, task: task)
+        } else {
+            guard (200 ..< 300).contains(response.statusCode) else {
+                throw APIError.unacceptableStatusCode(response.statusCode)
+            }
+        }
+    }
+
+    public func client(_ client: APIClient, shouldRetry task: URLSessionTask, error: Error, attempts: Int) async throws -> Bool {
+        try await passthroughDelegate?.client(client, shouldRetry: task, error: error, attempts: attempts) ?? false
+    }
+
+    public func client(_ client: APIClient, makeURLForRequest request: Request<some Any>) throws -> URL? {
+        try passthroughDelegate?.client(client, makeURLForRequest: request)
+    }
+}
+
 /// Basic wrapper of `Get.APIClient` with helper methods for interfacing with the `JellyfinAPI` package,
 /// like injecting required headers for API calls with the current access token.
 public final class JellyfinClient {
@@ -22,6 +56,7 @@ public final class JellyfinClient {
     private var _apiClient: APIClient!
     private let sessionConfiguration: URLSessionConfiguration
     private let delegate: APIClientDelegate?
+    private var testDelegate: TestDelegate?
 
     /// Create a `JellyfinClient` instance given a configuration and optional access token
     public init(
@@ -35,10 +70,11 @@ public final class JellyfinClient {
         self.sessionConfiguration = sessionConfiguration
         self.delegate = delegate
         self.accessToken = accessToken
+        self.testDelegate = TestDelegate()
 
         self._apiClient = APIClient(baseURL: configuration.url) { configuration in
             configuration.sessionConfiguration = sessionConfiguration
-            configuration.delegate = self
+            configuration.delegate = testDelegate
             configuration.sessionDelegate = sessionDelegate
 
             let isoDateFormatter: DateFormatter = OpenISO8601DateFormatter()
@@ -52,6 +88,9 @@ public final class JellyfinClient {
             encoder.outputFormatting = .prettyPrinted
             configuration.encoder = encoder
         }
+        
+        self.testDelegate?.jellyfinClient = self
+        self.testDelegate?.passthroughDelegate = delegate
     }
 
     public struct Configuration {
@@ -134,7 +173,7 @@ public final class JellyfinClient {
         try await _apiClient.download(resumeFrom: resumeData, delegate: delegate)
     }
 
-    private func authHeaders() -> String {
+    func authHeaders() -> String {
         let fields = [
             "DeviceId": configuration.deviceID,
             "Device": configuration.deviceName,
@@ -151,33 +190,33 @@ public final class JellyfinClient {
 
 // MARK: APIClientDelegate
 
-extension JellyfinClient: APIClientDelegate {
-
-    public func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
-        // Inject required headers
-        request.addValue(authHeaders(), forHTTPHeaderField: "Authorization")
-
-        try await delegate?.client(_apiClient, willSendRequest: &request)
-    }
-
-    public func client(_ client: APIClient, validateResponse response: HTTPURLResponse, data: Data, task: URLSessionTask) throws {
-        if let delegate {
-            try delegate.client(_apiClient, validateResponse: response, data: data, task: task)
-        } else {
-            guard (200 ..< 300).contains(response.statusCode) else {
-                throw APIError.unacceptableStatusCode(response.statusCode)
-            }
-        }
-    }
-
-    public func client(_ client: APIClient, shouldRetry task: URLSessionTask, error: Error, attempts: Int) async throws -> Bool {
-        try await delegate?.client(_apiClient, shouldRetry: task, error: error, attempts: attempts) ?? false
-    }
-
-    public func client(_ client: APIClient, makeURLForRequest request: Request<some Any>) throws -> URL? {
-        try delegate?.client(_apiClient, makeURLForRequest: request)
-    }
-}
+//extension JellyfinClient: APIClientDelegate {
+//
+//    public func client(_ client: APIClient, willSendRequest request: inout URLRequest) async throws {
+//        // Inject required headers
+//        request.addValue(authHeaders(), forHTTPHeaderField: "Authorization")
+//
+//        try await delegate?.client(_apiClient, willSendRequest: &request)
+//    }
+//
+//    public func client(_ client: APIClient, validateResponse response: HTTPURLResponse, data: Data, task: URLSessionTask) throws {
+//        if let delegate {
+//            try delegate.client(_apiClient, validateResponse: response, data: data, task: task)
+//        } else {
+//            guard (200 ..< 300).contains(response.statusCode) else {
+//                throw APIError.unacceptableStatusCode(response.statusCode)
+//            }
+//        }
+//    }
+//
+//    public func client(_ client: APIClient, shouldRetry task: URLSessionTask, error: Error, attempts: Int) async throws -> Bool {
+//        try await delegate?.client(_apiClient, shouldRetry: task, error: error, attempts: attempts) ?? false
+//    }
+//
+//    public func client(_ client: APIClient, makeURLForRequest request: Request<some Any>) throws -> URL? {
+//        try delegate?.client(_apiClient, makeURLForRequest: request)
+//    }
+//}
 
 // MARK: Helpers
 
